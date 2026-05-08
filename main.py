@@ -34,6 +34,39 @@ def exibir_cabecalho():
     print("=" * 60)
     print()
 
+def aplicar_reducao_eco_ducking(audio_mic, audio_pc, sample_rate):
+    """
+    Aplica Sidechain Ducking para atenuar o microfone quando houver som no PC.
+    Evita gravação duplicada quando não se usa fones de ouvido.
+    """
+    # Usaremos uma janela de 50ms para capturar o envelope
+    window_len = int(sample_rate * 0.05)
+    window = np.ones(window_len) / window_len
+    
+    # Calcula a energia (potência) do áudio do PC
+    pc_energy = audio_pc ** 2
+    # Cria o envelope usando média móvel (convolução rápida)
+    pc_envelope = np.convolve(pc_energy, window, mode='same')
+    
+    # Define o limite de ativação
+    threshold = 0.0001
+    
+    # Cria uma máscara binária (True = PC tocando som, False = Silêncio)
+    mask = pc_envelope > threshold
+    
+    # Janela de suavização de 100ms para que o corte não seja abrupto
+    smooth_window = np.ones(int(sample_rate * 0.1)) / int(sample_rate * 0.1)
+    smooth_mask = np.convolve(mask.astype(float), smooth_window, mode='same')
+    
+    # Calcula o ganho: onde máscara=1 (PC falando), ganho=0.1 (microfone 10%)
+    duck_factor = 0.1
+    gain = 1.0 - smooth_mask * (1.0 - duck_factor)
+    
+    # Limita o ganho para evitar anomalias e aplica
+    gain = np.clip(gain, duck_factor, 1.0)
+    return audio_mic * gain
+
+
 def listar_microfones():
     """Lista e permite a seleção de um microfone disponível."""
     mics = sc.all_microphones()
@@ -116,9 +149,12 @@ def main():
     capturar_pc = capturar_pc_input != 'n' # Considera "Sim" por padrão se o usuário apenas der Enter
     
     loopback = None
+    aplicar_aec = False
     if capturar_pc:
         speaker = sc.default_speaker()
         loopback = sc.get_microphone(id=speaker.id, include_loopback=True)
+        aplicar_aec_input = input("Deseja aplicar Redução de Eco para fones não utilizados? (s/N): ").strip().lower()
+        aplicar_aec = aplicar_aec_input == 's'
     print()
     
     # 2. Configurar Microfone
@@ -137,6 +173,7 @@ def main():
     print(f"🎤  Microfone: {mic.name}")
     if capturar_pc:
         print(f"🔊  Áudio PC:  {loopback.name}")
+        print(f"🧹  Redução Eco:{'Ativada' if aplicar_aec else 'Desativada'}")
     print(f"💾  Arquivo:   {nome_arquivo}")
     print("-" * 60)
     
@@ -205,6 +242,13 @@ def main():
     if dados_gravados:
         # Concatena todos os pequenos blocos de 1024 frames num array gigante
         audio_final = np.concatenate(dados_gravados, axis=0)
+        
+        # Aplica o AEC (Ducking) se o usuário solicitou e gravou o PC
+        if capturar_pc and aplicar_aec:
+            print("\n🧹  Limpando áudio: Aplicando redução de eco...")
+            # audio_final[:, 0] é mic, audio_final[:, 1] é PC
+            mic_limpo = aplicar_reducao_eco_ducking(audio_final[:, 0], audio_final[:, 1], TAXA_AMOSTRAGEM)
+            audio_final[:, 0] = mic_limpo
         
         # Salva o disco
         sf.write(nome_arquivo, audio_final, TAXA_AMOSTRAGEM)
