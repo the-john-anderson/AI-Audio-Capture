@@ -111,11 +111,13 @@ class AudioRecorder:
     Orquestrador de Captura e Gravação.
     Resolve problemas de drift de clock lendo dispositivos em threads assíncronas.
     """
-    def __init__(self, mic, capturar_pc, file_name, sample_rate=16000):
+    def __init__(self, mic, capturar_pc, file_name, sample_rate=16000, max_bytes=0):
         self.mic = mic
         self.capturar_pc = capturar_pc
         self.file_name = file_name
         self.sample_rate = sample_rate
+        self.max_bytes = max_bytes
+        self.arquivos_gerados = []
         
         self.estado = {'pausado': False, 'encerrado': False}
         self.queue = queue.Queue(maxsize=150) # Buffer para disco
@@ -132,24 +134,51 @@ class AudioRecorder:
         self.processor = AudioProcessor(sample_rate)
 
     def _writer_worker(self):
-        """Thread que consome a fila e faz append incremental no arquivo WAV."""
+        """Thread que consome a fila e salva os chunks, suportando divisão de arquivo por tamanho."""
         channels = 2 if self.capturar_pc else 1
-        frames_written = 0
+        bytes_per_frame = channels * 2 # 16-bit PCM (float é convertido internamente)
+        frames_written_current = 0
+        part_number = 1
+        
         logging.info("Iniciando Thread de Escrita no disco.")
         
+        def get_current_filename():
+            if self.max_bytes <= 0:
+                return self.file_name
+            base, ext = os.path.splitext(self.file_name)
+            return f"{base}_parte{part_number}{ext}"
+
+        current_file = get_current_filename()
+        self.arquivos_gerados.append(current_file)
+        file = sf.SoundFile(current_file, mode='w', samplerate=self.sample_rate, channels=channels)
+        
         try:
-            with sf.SoundFile(self.file_name, mode='w', samplerate=self.sample_rate, channels=channels) as file:
-                while not self.estado['encerrado'] or not self.queue.empty():
-                    try:
-                        chunk = self.queue.get(timeout=0.1)
-                        file.write(chunk)
-                        frames_written += len(chunk)
-                    except queue.Empty:
-                        continue
-            logging.info(f"Escrita finalizada com sucesso. Total de frames salvos: {frames_written}")
+            while not self.estado['encerrado'] or not self.queue.empty():
+                try:
+                    chunk = self.queue.get(timeout=0.1)
+                    
+                    if self.max_bytes > 0:
+                        chunk_bytes = len(chunk) * bytes_per_frame
+                        current_bytes = frames_written_current * bytes_per_frame
+                        if current_bytes + chunk_bytes > self.max_bytes:
+                            file.close()
+                            logging.info(f"Arquivo {current_file} atingiu limite. Iniciando nova parte.")
+                            part_number += 1
+                            current_file = get_current_filename()
+                            self.arquivos_gerados.append(current_file)
+                            file = sf.SoundFile(current_file, mode='w', samplerate=self.sample_rate, channels=channels)
+                            frames_written_current = 0
+                            
+                    file.write(chunk)
+                    frames_written_current += len(chunk)
+                except queue.Empty:
+                    continue
         except Exception as e:
             logging.error(f"Erro na thread de escrita do disco: {e}")
             self.estado['encerrado'] = True
+        finally:
+            file.close()
+            logging.info(f"Escrita finalizada com sucesso. {len(self.arquivos_gerados)} arquivo(s) gerado(s).")
 
     def _mic_worker(self):
         """Lê o microfone isoladamente."""
@@ -302,10 +331,21 @@ def main():
     
     # 3. Configurar Arquivo de Saída
     print("\n--- Configuração de Saída ---")
+    pasta_destino = os.path.join(os.path.expanduser("~"), "Documents", "Gravações de som PY")
+    os.makedirs(pasta_destino, exist_ok=True)
+    
     data_hora = datetime.now().strftime("%d-%m-%Y %H-%M")
     nome_padrao = f"Audio da Reuniao {data_hora}" # Evitando acentos para não gerar bugs no filepath
     nome_input = input(f"Nome do arquivo sem extensão [padrão: '{nome_padrao}']: ").strip()
-    nome_arquivo = f"{nome_input if nome_input else nome_padrao}.wav"
+    nome_base = f"{nome_input if nome_input else nome_padrao}.wav"
+    nome_arquivo = os.path.join(pasta_destino, nome_base)
+    
+    tamanho_max_input = input("Tamanho máximo de cada parte em MB (0 ou enter para sem limite): ").strip()
+    try:
+        max_mb = float(tamanho_max_input) if tamanho_max_input else 0.0
+    except ValueError:
+        max_mb = 0.0
+    max_bytes = int(max_mb * 1024 * 1024)
     
     aplicar_nr = nr is not None
     if not aplicar_nr:
@@ -321,11 +361,13 @@ def main():
         print(f"🧹  Redução Eco:{'Ativada (Pós-processamento)' if aplicar_ducking else 'Desativada'}")
     if aplicar_nr:
         print(f"✨  Limpeza Ruído: Ativada (Pós-processamento)")
-    print(f"💾  Arquivo:   {nome_arquivo}")
+    print(f"💾  Base Arquivo: {nome_arquivo}")
+    if max_mb > 0:
+        print(f"📏  Limite:    Dividir a cada {max_mb} MB")
     print("-" * 60)
     
     # 4. Inicia Orquestrador de Gravação
-    recorder = AudioRecorder(mic, capturar_pc, nome_arquivo, sample_rate=TAXA_AMOSTRAGEM)
+    recorder = AudioRecorder(mic, capturar_pc, nome_arquivo, sample_rate=TAXA_AMOSTRAGEM, max_bytes=max_bytes)
     recorder.start()
     
     print("▶️   GRAVAÇÃO INICIADA COM SUCESSO")
@@ -381,62 +423,68 @@ def main():
     recorder.stop()
     
     print("=" * 60)
-    print(f"✅  SUCESSO! Arquivo salvo como: {nome_arquivo}")
+    print(f"✅  SUCESSO! Foram gerados {len(recorder.arquivos_gerados)} arquivo(s).")
     
     # Executa o pós-processamento (Ducking e/ou Noise Reduce)
-    if (aplicar_ducking or aplicar_nr) and os.path.exists(nome_arquivo):
+    if (aplicar_ducking or aplicar_nr) and recorder.arquivos_gerados:
         print("\n✨  Iniciando Pós-processamento (Aguarde, isso pode levar alguns segundos)...")
         logging.info("Iniciando fase de pós-processamento...")
-        try:
-            data, rate = sf.read(nome_arquivo)
-            
-            # 1. Redução de Eco (Ducking Inteligente com Lookahead)
-            if aplicar_ducking and len(data.shape) > 1:
-                logging.info("Aplicando Redução de Eco (Ducking) via filtfilt...")
-                print("🧹  Aplicando Redução de Eco...")
-                mic_data = data[:, 0]
-                pc_data = data[:, 1]
+        
+        for arquivo_parte in recorder.arquivos_gerados:
+            if not os.path.exists(arquivo_parte):
+                continue
                 
-                # Cria envelope da energia do PC com filtro passa-baixa (zero-phase lookahead)
-                pc_rectified = np.abs(pc_data)
-                nyq = 0.5 * rate
-                cutoff = 5.0 # Hz (Envelope de ~200ms de reação)
-                b, a = butter(2, cutoff / nyq, btype='low')
+            print(f"\n🔄  Processando parte: {os.path.basename(arquivo_parte)}")
+            try:
+                data, rate = sf.read(arquivo_parte)
                 
-                pc_envelope = filtfilt(b, a, pc_rectified)
-                
-                # Máscara de Ducking: ativa quando energia passa do threshold
-                threshold = 0.015
-                duck_factor = 0.1 # Reduz o volume do mic para 10%
-                
-                # Transição suave de ganho
-                mask = np.clip((pc_envelope - threshold) * 50.0, 0.0, 1.0)
-                gain = 1.0 - mask * (1.0 - duck_factor)
-                
-                # Aplica o ganho no microfone
-                data[:, 0] = mic_data * gain
-
-            # 2. Remoção de Ruído
-            if aplicar_nr:
-                logging.info("Aplicando Remoção de Ruído (noisereduce)...")
-                print("✨  Limpando ruídos de fundo do microfone...")
-                if len(data.shape) > 1:
+                # 1. Redução de Eco (Ducking Inteligente com Lookahead)
+                if aplicar_ducking and len(data.shape) > 1:
+                    logging.info(f"Aplicando Redução de Eco na parte {arquivo_parte}...")
+                    print("🧹  Aplicando Redução de Eco...")
                     mic_data = data[:, 0]
-                    mic_reduced = nr.reduce_noise(y=mic_data, sr=rate, prop_decrease=0.9)
-                    data_clean = np.column_stack((mic_reduced, data[:, 1]))
+                    pc_data = data[:, 1]
+                    
+                    # Cria envelope da energia do PC com filtro passa-baixa (zero-phase lookahead)
+                    pc_rectified = np.abs(pc_data)
+                    nyq = 0.5 * rate
+                    cutoff = 5.0 # Hz (Envelope de ~200ms de reação)
+                    b, a = butter(2, cutoff / nyq, btype='low')
+                    
+                    pc_envelope = filtfilt(b, a, pc_rectified)
+                    
+                    # Máscara de Ducking: ativa quando energia passa do threshold
+                    threshold = 0.015
+                    duck_factor = 0.1 # Reduz o volume do mic para 10%
+                    
+                    # Transição suave de ganho
+                    mask = np.clip((pc_envelope - threshold) * 50.0, 0.0, 1.0)
+                    gain = 1.0 - mask * (1.0 - duck_factor)
+                    
+                    # Aplica o ganho no microfone
+                    data[:, 0] = mic_data * gain
+
+                # 2. Remoção de Ruído
+                if aplicar_nr:
+                    logging.info(f"Aplicando Remoção de Ruído na parte {arquivo_parte}...")
+                    print("✨  Limpando ruídos de fundo do microfone...")
+                    if len(data.shape) > 1:
+                        mic_data = data[:, 0]
+                        mic_reduced = nr.reduce_noise(y=mic_data, sr=rate, prop_decrease=0.9)
+                        data_clean = np.column_stack((mic_reduced, data[:, 1]))
+                    else:
+                        data_clean = nr.reduce_noise(y=data, sr=rate, prop_decrease=0.9)
                 else:
-                    data_clean = nr.reduce_noise(y=data, sr=rate, prop_decrease=0.9)
-            else:
-                data_clean = data
+                    data_clean = data
+                    
+                # Sobrescreve o arquivo original diretamente para evitar duplicidade
+                sf.write(arquivo_parte, data_clean, rate)
                 
-            # Sobrescreve o arquivo original diretamente para evitar duplicidade
-            sf.write(nome_arquivo, data_clean, rate)
-            
-            print(f"✅  SUCESSO! Áudio finalizado foi salvo em: {nome_arquivo}")
-            logging.info(f"Pós-processamento concluído. Arquivo sobrescrito em: {nome_arquivo}")
-        except Exception as e:
-            print(f"❌  Erro durante o pós-processamento: {e}")
-            logging.error(f"Falha no pós-processamento: {e}")
+                print(f"✅  SUCESSO! Parte finalizada e salva em: {arquivo_parte}")
+                logging.info(f"Pós-processamento concluído para {arquivo_parte}.")
+            except Exception as e:
+                print(f"❌  Erro durante o pós-processamento da parte {arquivo_parte}: {e}")
+                logging.error(f"Falha no pós-processamento da parte {arquivo_parte}: {e}")
 
     print("=" * 60)
     logging.info("=== Sessão Encerrada com Sucesso ===")
