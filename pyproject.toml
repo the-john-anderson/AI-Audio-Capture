@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-audio-capture"
+version = "2.0.0"
+description = "Gravador de microfone e/ou áudio do PC otimizado para IA a 16 kHz."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "AI-Audio-Capture" }]
+keywords = ["audio", "recording", "whisper", "loopback", "speech-to-text"]
+
+# Dependências de tempo de execução (núcleo). Versões mínimas testadas.
+dependencies = [
+    "soundcard>=0.4.3",
+    "soundfile>=0.12",
+    "numpy>=1.24",
+    "rich>=13.0",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+]
+
+[project.optional-dependencies]
+# Pós-processamento opcional (redução de eco + de ruído).
+postprocess = [
+    "scipy>=1.10",
+    "noisereduce>=3.0",
+]
+# Ferramentas de desenvolvimento e empacotamento.
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.2",
+    "ruff>=0.4",
+    "pyinstaller>=6.17",
+]
+
+[project.scripts]
+ai-audio-capture = "ai_audio_capture.app:run"
+
+[project.urls]
+Repository = "https://github.com/john-anderson-fp/AI-Audio-Capture"
+
+[tool.setuptools]
+packages = ["ai_audio_capture"]
+
+[tool.pytest.ini_options]
+# Garante que 'tests' e o pacote sejam importáveis a partir da raiz.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra"
+# Falha rápido se um join() de thread travar (requer pytest-timeout).
+timeout = 30
+timeout_method = "thread"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Estilo (E/W), pyflakes (F), imports (I), upgrade de sintaxe (UP),
+# bugbears (B), docstrings (D), type-annotations (ANN).
+select = ["E", "W", "F", "I", "UP", "B", "D", "ANN"]
+# D203/D213: conflitos de estilo de docstring (escolhemos D211/D212).
+# D401: a verificação de "modo imperativo" é específica do inglês e gera
+#       falsos positivos nas docstrings em português deste projeto.
+# ANN401: permitimos 'Any' nas fronteiras com bibliotecas sem type stubs
+#         (soundcard, scipy, noisereduce).
+ignore = ["D203", "D213", "D401", "ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"

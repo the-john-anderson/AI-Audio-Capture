@@ -1,0 +1,36 @@
+# Bytecode / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambientes virtuais
+.venv/
+.venv-build/
+venv/
+env/
+
+# Artefatos de build (PyInstaller)
+build/AI-Audio-Capture/
+build/AI-Audio-Capture-full/
+build/*.png
+dist/
+/AI-Audio-Capture.exe
+*.manifest
+
+# Logs e gravações
+*.log
+ai_audio_capture.log
+Gravações de som PY/
+
+# Testes / cobertura / lint
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / SO
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

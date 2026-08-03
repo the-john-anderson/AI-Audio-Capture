@@ -1,0 +1,8 @@
+# Dependências OPCIONAIS para o pós-processamento.
+#   - scipy: redução de eco (ducking por envelope filtrado).
+#   - noisereduce: limpeza de ruído de fundo pelo caminho NumPy/SciPy.
+# Instale com:  pip install -r requirements-postprocess.txt
+
+-r requirements.txt
+scipy==1.17.1
+noisereduce==3.0.3

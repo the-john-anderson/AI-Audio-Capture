@@ -1,0 +1,10 @@
+# Dependências de tempo de execução do AI-Audio-Capture.
+# Versões fixadas para builds reproduzíveis (testado em Python 3.14).
+# Pós-processamento (scipy, noisereduce) é opcional: ver requirements-postprocess.txt.
+
+soundcard==0.4.6
+soundfile==0.13.1
+numpy==2.4.1
+rich==15.0.0
+pydantic==2.12.5
+pydantic-settings==2.13.1
